@@ -77,7 +77,7 @@ build-installer.yml (single file, multi-step)
 
 所有构建逻辑内联在 `build-installer.yml` 工作流的各个步骤中，共享函数通过 `scripts/utils.sh` 提供。
 
-工作流会从 `luci-app-passwall` 的 Makefile 自动分析默认启用的功能开关，并结合目标架构条件生成 PassWall 根包列表。本地优先编译 `openwrt-passwall-packages` 中的相关组件；对递归依赖闭包里缺失的系统 APK，再从与 SDK 同版本同架构的官方 OpenWrt 源拉取并打包进 `.run`。
+工作流会直接克隆 `openwrt-passwall` 与 `openwrt-passwall-packages`，从 `luci-app-passwall` 的 Makefile 自动分析默认启用的功能开关，并结合目标架构条件生成 PassWall 根包列表。本地优先编译 PassWall 相关组件；对递归依赖闭包里缺失的系统 APK，再从与 SDK 同版本同架构的官方 OpenWrt 源拉取并打包进 `.run`。
 
 ## 性能优化 | Performance
 

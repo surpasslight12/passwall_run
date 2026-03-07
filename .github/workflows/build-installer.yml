@@ -271,9 +271,11 @@ jobs:
           hysteria,ipt2socks,microsocks,naiveproxy,shadowsocks-libev,shadowsocks-rust,\
           shadowsocksr-libev,simple-obfs,tcping,trojan-plus,tuic-client,v2ray-plugin,\
           xray-plugin,geoview,shadow-tls}
-          rm -rf package/passwall-packages
+          rm -rf package/passwall-packages package/passwall-luci
           retry 3 10 git clone --depth=1 \
             https://github.com/Openwrt-Passwall/openwrt-passwall-packages package/passwall-packages
+          retry 3 10 git clone --depth=1 \
+            https://github.com/Openwrt-Passwall/openwrt-passwall package/passwall-luci
           group_end
 
           # 安装 feeds 包 / Install feeds
@@ -290,13 +292,13 @@ jobs:
             iwinfo openssl libnl-tiny golang rust \
             || log_warn "Some feed packages unavailable"
           ./scripts/feeds install luci-base || log_warn "luci-base install had issues"
-          ./scripts/feeds install luci-app-passwall || die "Failed to install luci-app-passwall"
           group_end
 
           # 生成 .config / Generate build config
           group_start "Generate .config"
           rm -f .config .config.old 2>/dev/null || true
-          PASSWALL_MK="package/feeds/luci/luci-app-passwall/Makefile"
+          PASSWALL_LUCI_DIR="package/passwall-luci/luci-app-passwall"
+          PASSWALL_MK="$PASSWALL_LUCI_DIR/Makefile"
           PASSWALL_ROOTS="$PWD/.passwall-package-roots"
           [ -f "$PASSWALL_MK" ] || die "PassWall Makefile not found: $PASSWALL_MK"
 
@@ -312,7 +314,7 @@ jobs:
           from pathlib import Path
 
           root = Path.cwd()
-          makefile = root / "package/feeds/luci/luci-app-passwall/Makefile"
+          makefile = root / "package/passwall-luci/luci-app-passwall/Makefile"
           config = (root / ".config").read_text()
           enabled = set(re.findall(r'^(CONFIG_PACKAGE_luci-app-passwall_[A-Za-z0-9_]+)=[ym]$', config, re.M))
 
@@ -344,7 +346,7 @@ jobs:
             command -v "$tool" >/dev/null 2>&1 || die "Missing: $tool"
           done
           check_disk_space 10
-          for path in scripts/feeds staging_dir Makefile package/passwall-packages package/feeds/luci/luci-app-passwall; do
+          for path in scripts/feeds staging_dir Makefile package/passwall-packages package/passwall-luci/luci-app-passwall; do
             [ -e "$path" ] || die "Missing: $path"
           done
           log_info "Validation passed"
@@ -391,7 +393,7 @@ jobs:
               shadowsocksr-libev-*) echo "package/passwall-packages/shadowsocksr-libev" ;;
               simple-obfs-*) echo "package/passwall-packages/simple-obfs" ;;
               v2ray-geoip|v2ray-geosite) echo "package/passwall-packages/v2ray-geodata" ;;
-              luci-app-passwall|luci-i18n-passwall-zh-cn) echo "package/feeds/luci/luci-app-passwall" ;;
+              luci-app-passwall|luci-i18n-passwall-zh-cn) echo "package/passwall-luci/luci-app-passwall" ;;
               *)
                 [ -d "package/passwall-packages/$pkg" ] && echo "package/passwall-packages/$pkg" || return 1
                 ;;
@@ -405,7 +407,7 @@ jobs:
             [ -n "$src_dir" ] || continue
             LOCAL_SOURCE_PKGS["$src_dir"]+=" $pkg"
           done < "$PASSWALL_ROOTS_FILE"
-          LOCAL_SOURCE_PKGS["package/feeds/luci/luci-app-passwall"]+=" luci-app-passwall luci-i18n-passwall-zh-cn"
+          LOCAL_SOURCE_PKGS["package/passwall-luci/luci-app-passwall"]+=" luci-app-passwall luci-i18n-passwall-zh-cn"
 
           if grep -Eq '^(shadow-tls|shadowsocks-rust-)' "$PASSWALL_ROOTS_FILE"; then
             group_start "Install Rust target"
