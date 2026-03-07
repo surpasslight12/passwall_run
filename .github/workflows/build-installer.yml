@@ -513,6 +513,7 @@ jobs:
           ARCH_PACKAGES=$(sed -n 's/^CONFIG_TARGET_ARCH_PACKAGES="\([^"]*\)"/\1/p' .config | head -n 1)
           LOCAL_REPO_ROOT="$PWD/.local-apk-repo"
           LOCAL_REPO_ARCH_DIR="$LOCAL_REPO_ROOT/$ARCH_PACKAGES"
+          LOCAL_REPO_INDEX="$LOCAL_REPO_ARCH_DIR/APKINDEX.tar.gz"
           FETCH_DIR="$PWD/.resolved-apks"
 
           [ -x "$APK_TOOL" ] || die "OpenWrt host apk tool not found: $APK_TOOL"
@@ -561,7 +562,7 @@ jobs:
             done
             mapfile -t LOCAL_REPO_APKS < <(find "$LOCAL_REPO_ARCH_DIR" -maxdepth 1 -type f -name '*.apk' | LC_ALL=C sort)
             [ "${#LOCAL_REPO_APKS[@]}" -gt 0 ] || die "Local APK repository is empty"
-            "$APK_TOOL" mkndx -o "$LOCAL_REPO_ARCH_DIR/Packages.adb" "${LOCAL_REPO_APKS[@]}" \
+            "$APK_TOOL" index --no-warnings -o "$LOCAL_REPO_INDEX" "${LOCAL_REPO_APKS[@]}" \
               || die "Failed to create local APK index"
           }
 
@@ -574,7 +575,7 @@ jobs:
             [ -n "$target_path" ] || die "Cannot derive target path from SDK URL"
             cat > "$repo_file" <<EOF
           set APK_ARCH=$ARCH_PACKAGES
-          v3 $LOCAL_REPO_ROOT
+          ndx $LOCAL_REPO_INDEX
           v3 $dist_root/targets/$target_path/packages
           v3 $dist_root/packages/$ARCH_PACKAGES/base
           v3 $dist_root/packages/$ARCH_PACKAGES/packages
