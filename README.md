@@ -13,6 +13,8 @@ Automatically compiles PassWall and all dependencies via GitHub Actions into a s
 - **Rust 编译优化**（并行代码生成、优化 RUSTFLAGS）
 - 编译自动降级（并行 → 单线程）
 - 适配 OpenWrt 25.12+ APK 包管理器
+- 自动分析 luci-app-passwall 选择的功能包并本地编译 PassWall 相关组件
+- 对缺失的系统依赖 APK 自动从官方 OpenWrt 源拉取并并入 `.run`
 - 每日自动检查上游 PassWall 稳定版并在有新版本时自动触发构建
 
 ## 快速开始 | Quick Start
@@ -38,8 +40,7 @@ Automatically compiles PassWall and all dependencies via GitHub Actions into a s
 │   ├── build-installer.yml    # 构建工作流（单文件多步骤）
 │   └── sync-passwall-tag.yml  # 每日同步上游稳定版 tag
 ├── config/
-│   ├── openwrt-sdk.conf       # SDK URL 配置
-│   └── packages.conf          # 编译包列表
+│   └── openwrt-sdk.conf       # SDK URL 配置
 ├── scripts/
 │   └── utils.sh               # 工具函数库（日志、重试、make 封装等）
 ├── payload/
@@ -54,10 +55,6 @@ Automatically compiles PassWall and all dependencies via GitHub Actions into a s
 | 变量 Variable | 必填 Required | 说明 Description |
 |---------------|---------------|------------------|
 | `OPENWRT_SDK_URL` | ✅ | SDK 下载地址 |
-
-### `config/packages.conf`
-
-每行一个包名，`#` 开头为注释。工作流的编译和收集步骤都会按此列表执行，避免“选择了但未编译/未收集”的不一致。
 
 ### Workflow 手动触发参数 | Workflow Dispatch Inputs
 
@@ -80,14 +77,7 @@ build-installer.yml (single file, multi-step)
 
 所有构建逻辑内联在 `build-installer.yml` 工作流的各个步骤中，共享函数通过 `scripts/utils.sh` 提供。
 
-编译按工具链分组进行（按源码目录构建，子包共享同一源码目录）：
-
-| 分组 Group | 包 Packages |
-|------------|-------------|
-| Rust       | shadow-tls, shadowsocks-rust |
-| Go         | geoview, hysteria, sing-box, v2ray-plugin, xray-core, xray-plugin |
-| C/C++      | dns2socks, ipt2socks, microsocks, shadowsocks-libev, shadowsocksr-libev, simple-obfs, tcping, trojan-plus |
-| Prebuilt   | chinadns-ng, naiveproxy, tuic-client, v2ray-geodata |
+工作流会从 `luci-app-passwall` 的 Makefile 自动分析已启用的功能开关，生成 PassWall 根包列表。本地优先编译 `openwrt-passwall-packages` 中的相关组件；对递归依赖闭包里缺失的系统 APK，再从与 SDK 同版本同架构的官方 OpenWrt 源拉取并打包进 `.run`。
 
 ## 性能优化 | Performance
 

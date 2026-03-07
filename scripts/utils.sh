@@ -97,20 +97,26 @@ check_disk_space() {
   log_info "Disk: ${avail_gb}GB available"
 }
 
-# ── 包配置读取 / Read package config ──
-# Usage: packages_conf_list <path/to/packages.conf>
-packages_conf_list() {
-  local pkgconf="$1" line
-  [ -f "$pkgconf" ] || return 1
-  while IFS= read -r line || [ -n "$line" ]; do
-    [[ "$line" =~ ^[[:space:]]*# ]] && continue
-    [[ -z "${line// }" ]] && continue
-    if [[ "$line" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]; then
-      printf '%s\n' "$line"
-    else
-      log_warn "Skipping invalid package name in $(basename "$pkgconf"): $line"
-    fi
-  done < "$pkgconf"
+# ── APK 元数据读取 / Read APK metadata ──
+apk_pkginfo_stream() {
+  local apk_file="$1"
+  tar -xOf "$apk_file" .PKGINFO 2>/dev/null
+}
+
+apk_pkginfo_values() {
+  local apk_file="$1" field="$2"
+  apk_pkginfo_stream "$apk_file" | sed -n "s/^${field} = //p"
+}
+
+normalize_apk_dependency() {
+  local dep="$1"
+  dep="${dep#*!}"
+  dep="${dep%%[<>=~]*}"
+  dep="${dep%% *}"
+  case "$dep" in
+    ""|so:*|cmd:*|pc:*) return 1 ;;
+  esac
+  printf '%s\n' "$dep"
 }
 
 # ── GitHub Actions 辅助 / GitHub Actions helpers ──

@@ -53,7 +53,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
             build-essential libncurses5-dev gawk gettext unzip file \
-            libssl-dev wget python3 git ca-certificates makeself zstd \
+            libssl-dev wget python3 python3-yaml git ca-certificates makeself zstd \
             || die "apt-get install failed"
           log_info "Build dependencies installed"
           group_end
@@ -296,16 +296,49 @@ jobs:
           # 生成 .config / Generate build config
           group_start "Generate .config"
           rm -f .config .config.old 2>/dev/null || true
+          PASSWALL_MK="package/feeds/luci/luci-app-passwall/Makefile"
+          PASSWALL_ROOTS="$PWD/.passwall-package-roots"
+          [ -f "$PASSWALL_MK" ] || die "PassWall Makefile not found: $PASSWALL_MK"
+
+          cat >> .config <<'EOF'
+          CONFIG_PACKAGE_luci-app-passwall=m
+          CONFIG_PACKAGE_luci-i18n-passwall-zh-cn=m
+          EOF
+
+          while IFS= read -r suffix; do
+            echo "CONFIG_PACKAGE_luci-app-passwall_${suffix}=y" >> .config
+          done < <(sed -n 's/^config PACKAGE_\$\(PKG_NAME\)_\([A-Za-z0-9_]*\)$/\1/p' "$PASSWALL_MK")
+
           make defconfig </dev/null
-          PKGCONF="${GITHUB_WORKSPACE}/config/packages.conf"
-          if [ -f "$PKGCONF" ]; then
-            while IFS= read -r pkg; do
-              echo "CONFIG_PACKAGE_${pkg}=m" >> .config
-            done < <(packages_conf_list "$PKGCONF")
-          else
-            log_warn "packages.conf not found"
-          fi
-          make defconfig </dev/null
+
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          root = Path.cwd()
+          makefile = root / "package/feeds/luci/luci-app-passwall/Makefile"
+          config = (root / ".config").read_text()
+          enabled = set(re.findall(r'^(CONFIG_PACKAGE_luci-app-passwall_[A-Za-z0-9_]+)=[ym]$', config, re.M))
+
+          roots = []
+          current = None
+          for raw_line in makefile.read_text().splitlines():
+            line = raw_line.strip()
+            match = re.match(r'^config PACKAGE_\$\(PKG_NAME\)_([A-Za-z0-9_]+)$', line)
+            if match:
+              current = f"CONFIG_PACKAGE_luci-app-passwall_{match.group(1)}"
+              continue
+            match = re.match(r'^select PACKAGE_([A-Za-z0-9_\-]+)$', line)
+            if match and current in enabled:
+              roots.append(match.group(1))
+
+          out = root / ".passwall-package-roots"
+          out.write_text("\n".join(sorted(dict.fromkeys(roots))) + "\n")
+          print(f"generated {len(set(roots))} passwall root packages")
+          PY
+
+          [ -s "$PASSWALL_ROOTS" ] || die "Auto-generated PassWall package root list is empty"
+          log_info "Generated $(wc -l < "$PASSWALL_ROOTS") PassWall root packages"
           log_info "Config generated"
           group_end
 
@@ -351,36 +384,34 @@ jobs:
           log_info "CARGO_INCREMENTAL=$CARGO_INCREMENTAL"
           log_info "CARGO_PROFILE_RELEASE_DEBUG=$CARGO_PROFILE_RELEASE_DEBUG"
 
-          # 包分组 / Package groups
-          C_PKGS=(dns2socks ipt2socks microsocks shadowsocks-libev shadowsocksr-libev simple-obfs tcping trojan-plus)
-          GO_PKGS=(geoview hysteria sing-box v2ray-plugin xray-core xray-plugin)
-          RUST_PKGS=(shadow-tls shadowsocks-rust)
-          PRE_PKGS=(chinadns-ng naiveproxy tuic-client v2ray-geodata)
+          PASSWALL_ROOTS_FILE="$PWD/.passwall-package-roots"
+          [ -s "$PASSWALL_ROOTS_FILE" ] || die "PassWall root package list missing"
 
-          PKGCONF="${GITHUB_WORKSPACE}/config/packages.conf"
-          SELECTED_PACKAGES=""
-          if [ -f "$PKGCONF" ]; then
-            while IFS= read -r pkg; do
-              SELECTED_PACKAGES+="$pkg"$'\n'
-            done < <(packages_conf_list "$PKGCONF")
-          fi
+          map_passwall_source_dir() {
+            local pkg="$1"
+            case "$pkg" in
+              shadowsocks-libev-*) echo "package/passwall-packages/shadowsocks-libev" ;;
+              shadowsocks-rust-*) echo "package/passwall-packages/shadowsocks-rust" ;;
+              shadowsocksr-libev-*) echo "package/passwall-packages/shadowsocksr-libev" ;;
+              simple-obfs-*) echo "package/passwall-packages/simple-obfs" ;;
+              v2ray-geoip|v2ray-geosite) echo "package/passwall-packages/v2ray-geodata" ;;
+              luci-app-passwall|luci-i18n-passwall-zh-cn) echo "package/feeds/luci/luci-app-passwall" ;;
+              *)
+                [ -d "package/passwall-packages/$pkg" ] && echo "package/passwall-packages/$pkg" || return 1
+                ;;
+            esac
+          }
 
-          RUST_REQUESTED=1
-          if [ -n "$SELECTED_PACKAGES" ]; then
-            RUST_REQUESTED=0
-            for pkg in shadow-tls shadowsocks-rust; do
-              case "$pkg" in
-                shadow-tls)
-                  printf '%s' "$SELECTED_PACKAGES" | grep -qx "$pkg" && RUST_REQUESTED=1
-                  ;;
-                shadowsocks-rust)
-                  printf '%s' "$SELECTED_PACKAGES" | grep -Eq '^shadowsocks-rust(-|$)' && RUST_REQUESTED=1
-                  ;;
-              esac
-            done
-          fi
+          declare -A LOCAL_SOURCE_PKGS=()
+          while IFS= read -r pkg; do
+            [ -n "$pkg" ] || continue
+            src_dir=$(map_passwall_source_dir "$pkg" || true)
+            [ -n "$src_dir" ] || continue
+            LOCAL_SOURCE_PKGS["$src_dir"]+=" $pkg"
+          done < "$PASSWALL_ROOTS_FILE"
+          LOCAL_SOURCE_PKGS["package/feeds/luci/luci-app-passwall"]+=" luci-app-passwall luci-i18n-passwall-zh-cn"
 
-          if [ "$RUST_REQUESTED" -eq 1 ]; then
+          if grep -Eq '^(shadow-tls|shadowsocks-rust-)' "$PASSWALL_ROOTS_FILE"; then
             group_start "Install Rust target"
             GCC_BIN=$(find staging_dir -type f -path '*/toolchain-*/bin/*-gcc' 2>/dev/null | LC_ALL=C sort | head -n 1 || true)
             [ -n "$GCC_BIN" ] || die "Cannot locate OpenWrt toolchain gcc"
@@ -397,129 +428,66 @@ jobs:
             group_end
           fi
 
-          is_package_selected() {
-            local pkg="$1"
-            [ -z "$SELECTED_PACKAGES" ] && return 0
-            case "$pkg" in
-              shadowsocks-libev)  printf '%s' "$SELECTED_PACKAGES" | grep -Eq '^shadowsocks-libev(-|$)' ;;
-              shadowsocks-rust)   printf '%s' "$SELECTED_PACKAGES" | grep -Eq '^shadowsocks-rust(-|$)' ;;
-              shadowsocksr-libev) printf '%s' "$SELECTED_PACKAGES" | grep -Eq '^shadowsocksr-libev(-|$)' ;;
-              simple-obfs)        printf '%s' "$SELECTED_PACKAGES" | grep -Eq '^simple-obfs(-|$)' ;;
-              v2ray-geodata)      printf '%s' "$SELECTED_PACKAGES" | grep -Eq '^v2ray-(geodata|geoip|geosite)$' ;;
-              *)                  printf '%s' "$SELECTED_PACKAGES" | grep -qx "$pkg" ;;
-            esac
-          }
-
-          TOTAL_OK=0 TOTAL_FAIL=0 FAILED_LIST="" PKG_TIMINGS=""
-          declare -A FEEDS_INDEX=()
-          while IFS= read -r -d '' fpath; do
-            fname=$(basename "$fpath")
-            if [ -n "${FEEDS_INDEX[$fname]+x}" ]; then
-              log_warn "Duplicate feed package name detected: $fname (${FEEDS_INDEX[$fname]} vs $fpath)"
-              continue
-            fi
-            FEEDS_INDEX["$fname"]="$fpath"
-          done < <(find package/feeds -mindepth 2 -maxdepth 2 \( -type l -o -type d \) -print0 2>/dev/null)
+          TOTAL_OK=0
+          TOTAL_FAIL=0
+          FAILED_LIST=""
+          PKG_TIMINGS=""
 
           add_timing() {
-            local group_label="$1" name="$2" status="$3" duration="$4"
+            local name="$1" status="$2" duration="$3"
             local display_time="$duration"
             [[ "$duration" =~ ^[0-9]+$ ]] && display_time="${duration}s"
             log_info "$name finished in ${display_time} ($status)"
-            PKG_TIMINGS+="${group_label}|${name}|${status}|${display_time}"$'\n'
-          }
-
-          build_group() {
-            local label="$1"; shift
-            local ok=0 fail=0 t0 total_pkgs=0
-            t0=$(date +%s)
-            for pkg in "$@"; do
-              is_package_selected "$pkg" && total_pkgs=$((total_pkgs + 1))
-            done
-            if [ "$total_pkgs" -eq 0 ]; then
-              log_info "No selected packages in $label, skipping"
-              return
-            fi
-
-            group_start "Build $label (${total_pkgs} packages)"
-            local idx=0
-            for pkg in "$@"; do
-              is_package_selected "$pkg" || continue
-              idx=$((idx + 1))
-              local pkg_path="" status="ok" pkg_t0 pkg_dur
-              [ -d "package/passwall-packages/$pkg" ] && pkg_path="package/passwall-packages/$pkg"
-              [ -z "$pkg_path" ] && [ -d "package/$pkg" ] && pkg_path="package/$pkg"
-              [ -z "$pkg_path" ] && [ -n "${FEEDS_INDEX[$pkg]+x}" ] && pkg_path="${FEEDS_INDEX[$pkg]}"
-              if [ -z "$pkg_path" ]; then
-                log_warn "[$label ${idx}/${total_pkgs}] Package not found: $pkg"
-                fail=$((fail + 1))
-                FAILED_LIST="$FAILED_LIST $pkg"
-                status="missing"
-                add_timing "$label" "$pkg" "$status" "N/A"
-                continue
-              fi
-              log_info "[$label ${idx}/${total_pkgs}] Building $pkg …"
-              pkg_t0=$(date +%s)
-              if make_pkg "${pkg_path}/compile" "$pkg"; then
-                ok=$((ok + 1))
-                status="ok"
-              else
-                log_warn "[$label ${idx}/${total_pkgs}] Skipping failed package: $pkg"
-                fail=$((fail + 1))
-                FAILED_LIST="$FAILED_LIST $pkg"
-                status="failed"
-              fi
-              pkg_dur=$(( $(date +%s) - pkg_t0 ))
-              add_timing "$label" "$pkg" "$status" "$pkg_dur"
-            done
-            log_info "$label complete: $ok OK, $fail failed, total $(($(date +%s) - t0))s"
-            group_end
-            TOTAL_OK=$((TOTAL_OK + ok))
-            TOTAL_FAIL=$((TOTAL_FAIL + fail))
+            PKG_TIMINGS+="${name}|${status}|${display_time}"$'\n'
           }
 
           check_disk_space 10
 
-          build_group "Rust"     "${RUST_PKGS[@]}"
-          build_group "Go"       "${GO_PKGS[@]}"
-          build_group "C/C++"    "${C_PKGS[@]}"
-          build_group "Prebuilt" "${PRE_PKGS[@]}"
+          group_start "Build PassWall package sources"
+          while IFS= read -r src_dir; do
+            [ -n "$src_dir" ] || continue
+            label=$(basename "$src_dir")
+            pkg_t0=$(date +%s)
+            if make_pkg "$src_dir/compile" "$label"; then
+              TOTAL_OK=$((TOTAL_OK + 1))
+              add_timing "$label" "ok" "$(( $(date +%s) - pkg_t0 ))"
+            else
+              TOTAL_FAIL=$((TOTAL_FAIL + 1))
+              FAILED_LIST="$FAILED_LIST $label"
+              add_timing "$label" "failed" "$(( $(date +%s) - pkg_t0 ))"
+            fi
+          done < <(printf '%s\n' "${!LOCAL_SOURCE_PKGS[@]}" | LC_ALL=C sort)
+          group_end
 
-          log_info "Dependencies: $TOTAL_OK OK, $TOTAL_FAIL failed"
+          log_info "Package sources: $TOTAL_OK OK, $TOTAL_FAIL failed"
           [ -n "$FAILED_LIST" ] && log_warn "Failed:$FAILED_LIST"
 
           {
             SUMMARY="## Build Summary"$'\n'
-            SUMMARY+="- **Built**: $TOTAL_OK"$'\n'
-            SUMMARY+="- **Failed**: $TOTAL_FAIL"$'\n'
+            SUMMARY+="- **Built package sources**: $TOTAL_OK"$'\n'
+            SUMMARY+="- **Failed package sources**: $TOTAL_FAIL"$'\n'
             if [ -n "$FAILED_LIST" ]; then
               SUMMARY+="### Failed"$'\n'
               for p in $FAILED_LIST; do SUMMARY+="- \`$p\`"$'\n'; done
             fi
             if [ -n "$PKG_TIMINGS" ]; then
               SUMMARY+="### Build Durations"$'\n'
-              SUMMARY+="| Group | Package | Status | Time |"$'\n'
-              SUMMARY+="| --- | --- | --- | --- |"$'\n'
-              while IFS='|' read -r grp pkg status sec; do
-                [ -z "$grp" ] && continue
-                SUMMARY+="| $grp | $pkg | $status | $sec |"$'\n'
+              SUMMARY+="| Package Source | Status | Time |"$'\n'
+              SUMMARY+="| --- | --- | --- |"$'\n'
+              while IFS='|' read -r pkg status sec; do
+                [ -z "$pkg" ] && continue
+                SUMMARY+="| $pkg | $status | $sec |"$'\n'
               done <<< "$PKG_TIMINGS"
             fi
             gh_summary "$SUMMARY"
           }
 
-          MIN_REQUIRED=${MIN_REQUIRED_PACKAGES:-15}
-          MAX_FAILURES=${MAX_ALLOWED_FAILURES:-5}
+          MIN_REQUIRED=1
+          MAX_FAILURES=0
           [ "$TOTAL_FAIL" -gt "$MAX_FAILURES" ] && die "Too many failures: $TOTAL_FAIL > $MAX_FAILURES"
-          [ "$TOTAL_OK" -lt "$MIN_REQUIRED" ] && die "Only $TOTAL_OK packages built (need $MIN_REQUIRED)"
+          [ "$TOTAL_OK" -lt "$MIN_REQUIRED" ] && die "No PassWall package source was built"
 
-          # 编译主包 / Compile main package
-          group_start "Compile luci-app-passwall"
-          make_pkg "package/feeds/luci/luci-app-passwall/compile" "luci-app-passwall" \
-            || die "Failed to compile luci-app-passwall"
-          group_end
-
-          log_info "Compilation complete: $TOTAL_OK deps + luci-app-passwall"
+          log_info "Compilation complete: $TOTAL_OK package sources"
           step_end
 
       # ── 收集产物 / Collect packages ──
@@ -532,51 +500,202 @@ jobs:
 
           PAYLOAD="${GITHUB_WORKSPACE}/payload"
           DEPENDS="$PAYLOAD/depends"
+          find "$PAYLOAD" -maxdepth 1 -type f \( -name '*.apk' -o -name '*.run' \) -delete 2>/dev/null || true
+          find "$DEPENDS" -maxdepth 1 -type f -name '*.apk' -delete 2>/dev/null || true
           mkdir -p "$DEPENDS"
+          PASSWALL_ROOTS_FILE="$PWD/.passwall-package-roots"
+          [ -s "$PASSWALL_ROOTS_FILE" ] || die "PassWall root package list missing"
 
-          collect_pkg() {
-            local prefix="$1" dest="$2"
-            local best=""
-            while IFS= read -r -d '' f; do
-              if [ -z "$best" ] || [ "$f" -nt "$best" ]; then best="$f"; fi
-            done < <(find bin/packages -type f \( -name "${prefix}-*.apk" -o -name "${prefix}_*.apk" \) -print0)
-            [ -n "$best" ] || return 1
-            cp "$best" "$dest/"
-            log_info "Collected $prefix → $(basename "$best")"
+          declare -A APK_INDEX=()
+          declare -A TOPLEVEL_PKGS=()
+          declare -A COPIED_PKGS=()
+          declare -A SEEN_PKGS=()
+          declare -A MISSING_PKGS=()
+          declare -A MISSING_LOCAL_DEPS=()
+          declare -A OFFICIAL_FETCH_PKGS=()
+          QUEUE=()
+
+          queue_pkg() {
+            local pkg="$1"
+            [ -n "$pkg" ] || return 0
+            [ -n "${SEEN_PKGS[$pkg]+x}" ] && return 0
+            SEEN_PKGS["$pkg"]=1
+            QUEUE+=("$pkg")
+          }
+
+          index_apks() {
+            local apk_file pkg_name current
+            while IFS= read -r -d '' apk_file; do
+              pkg_name=$(apk_pkginfo_values "$apk_file" pkgname | head -n 1 || true)
+              if [ -z "$pkg_name" ]; then
+                log_warn "Skipping APK without pkgname metadata: $apk_file"
+                continue
+              fi
+              current="${APK_INDEX[$pkg_name]:-}"
+              if [ -z "$current" ] || [ "$apk_file" -nt "$current" ]; then
+                APK_INDEX["$pkg_name"]="$apk_file"
+              fi
+            done < <(find bin/packages -type f -name '*.apk' -print0)
+          }
+
+          copy_indexed_pkg() {
+            local pkg="$1" dest="$2" apk_file
+            apk_file="${APK_INDEX[$pkg]:-}"
+            [ -n "$apk_file" ] || return 1
+            [ -n "${COPIED_PKGS[$pkg]+x}" ] && return 0
+            cp "$apk_file" "$dest/"
+            COPIED_PKGS["$pkg"]="$dest"
+            log_info "Collected $pkg → $(basename "$apk_file")"
+          }
+
+          enqueue_apk_dependencies() {
+            local pkg="$1" apk_file dep raw_dep
+            apk_file="${APK_INDEX[$pkg]:-}"
+            [ -n "$apk_file" ] || return 0
+            while IFS= read -r raw_dep; do
+              dep=$(normalize_apk_dependency "$raw_dep" || true)
+              [ -n "$dep" ] || continue
+              if [ -n "${APK_INDEX[$dep]+x}" ]; then
+                queue_pkg "$dep"
+              else
+                MISSING_LOCAL_DEPS["$dep"]=1
+                OFFICIAL_FETCH_PKGS["$dep"]=1
+              fi
+            done < <(apk_pkginfo_values "$apk_file" depend)
+          }
+
+          make_official_repositories() {
+            local repo_file="$1"
+            local dist_root target_path arch_packages
+            dist_root="${OPENWRT_SDK_URL%%/targets/*}"
+            target_path=$(printf '%s' "$OPENWRT_SDK_URL" | sed -n 's#.*/targets/\([^/]*/[^/]*\)/.*#\1#p')
+            arch_packages=$(sed -n 's/^CONFIG_TARGET_ARCH_PACKAGES="\([^"]*\)"/\1/p' .config | head -n 1)
+            [ -n "$dist_root" ] || die "Cannot derive OpenWrt dist root from SDK URL"
+            [ -n "$target_path" ] || die "Cannot derive target path from SDK URL"
+            [ -n "$arch_packages" ] || die "Cannot derive ARCH_PACKAGES from .config"
+            cat > "$repo_file" <<EOF
+          set APK_ARCH=$arch_packages
+          v3 $dist_root/targets/$target_path/packages
+          v3 $dist_root/packages/$arch_packages/base
+          v3 $dist_root/packages/$arch_packages/packages
+          v3 $dist_root/packages/$arch_packages/luci
+          v3 $dist_root/packages/$arch_packages/routing
+          v3 $dist_root/packages/$arch_packages/telephony
+          EOF
+          }
+
+          fetch_official_packages() {
+            local repo_file="$1" dest_dir="$2"
+            shift 2
+            [ "$#" -gt 0 ] || return 0
+            local apk_tool="staging_dir/host/bin/apk"
+            local arch_packages
+            arch_packages=$(sed -n 's/^CONFIG_TARGET_ARCH_PACKAGES="\([^"]*\)"/\1/p' .config | head -n 1)
+            [ -x "$apk_tool" ] || die "OpenWrt host apk tool not found: $apk_tool"
+            [ -n "$arch_packages" ] || die "Cannot derive ARCH_PACKAGES from .config"
+            "$apk_tool" \
+              --allow-untrusted \
+              --force-missing-repositories \
+              --force-refresh \
+              --no-interactive \
+              --arch "$arch_packages" \
+              --repositories-file "$repo_file" \
+              fetch --recursive -o "$dest_dir" "$@"
           }
 
           group_start "Collect packages"
-          find bin/packages \( -name "luci-app-passwall-*.apk" -o -name "luci-app-passwall_*.apk" \) \
-            -exec cp {} "$PAYLOAD/" \;
-          collect_pkg "luci-i18n-passwall-zh-cn" "$PAYLOAD" \
-            || log_info "Chinese i18n package not found (non-critical)"
+          index_apks
 
-          DEPS=()
-          PKGCONF="${GITHUB_WORKSPACE}/config/packages.conf"
-          if [ -f "$PKGCONF" ]; then
-            while IFS= read -r pkg; do
-              DEPS+=("$pkg")
-            done < <(packages_conf_list "$PKGCONF")
+          [ -n "${APK_INDEX[luci-app-passwall]:-}" ] || die "luci-app-passwall APK not found"
+          copy_indexed_pkg "luci-app-passwall" "$PAYLOAD"
+          TOPLEVEL_PKGS["luci-app-passwall"]=1
+          queue_pkg "luci-app-passwall"
+
+          if [ -n "${APK_INDEX[luci-i18n-passwall-zh-cn]:-}" ]; then
+            copy_indexed_pkg "luci-i18n-passwall-zh-cn" "$PAYLOAD"
+            TOPLEVEL_PKGS["luci-i18n-passwall-zh-cn"]=1
+            queue_pkg "luci-i18n-passwall-zh-cn"
           else
-            log_warn "packages.conf not found, dependency collection list is empty"
+            log_info "Chinese i18n package not found (non-critical)"
           fi
 
-          COLLECTED=0
-          for p in "${DEPS[@]}"; do
-            if collect_pkg "$p" "$DEPENDS"; then
-              COLLECTED=$((COLLECTED + 1))
+          ROOT_COUNT=0
+          while IFS= read -r p; do
+            [ -n "$p" ] || continue
+            ROOT_COUNT=$((ROOT_COUNT + 1))
+            if [ -n "${APK_INDEX[$p]:-}" ]; then
+              queue_pkg "$p"
             else
-              log_warn "Missing: $p"
+              OFFICIAL_FETCH_PKGS["$p"]=1
             fi
+          done < "$PASSWALL_ROOTS_FILE"
+
+          queue_index=0
+          while [ "$queue_index" -lt "${#QUEUE[@]}" ]; do
+            pkg="${QUEUE[$queue_index]}"
+            queue_index=$((queue_index + 1))
+            if [ -n "${TOPLEVEL_PKGS[$pkg]+x}" ]; then
+              enqueue_apk_dependencies "$pkg"
+              continue
+            fi
+            copy_indexed_pkg "$pkg" "$DEPENDS" || {
+              MISSING_PKGS["$pkg"]=1
+              continue
+            }
+            enqueue_apk_dependencies "$pkg"
           done
-          log_info "Collected $COLLECTED/${#DEPS[@]} dependency packages"
+
+          OFFICIAL_REPO_FILE="$PWD/.official-repositories"
+          make_official_repositories "$OFFICIAL_REPO_FILE"
+
+          OFFICIAL_LIST=()
+          for pkg in "${!OFFICIAL_FETCH_PKGS[@]}"; do
+            OFFICIAL_LIST+=("$pkg")
+          done
+
+          if [ "${#OFFICIAL_LIST[@]}" -gt 0 ]; then
+            group_start "Fetch official dependency APKs"
+            printf '%s\n' "${OFFICIAL_LIST[@]}" | LC_ALL=C sort > /tmp/passwall-official-fetch.txt
+            mapfile -t OFFICIAL_LIST < /tmp/passwall-official-fetch.txt
+            fetch_official_packages "$OFFICIAL_REPO_FILE" "$DEPENDS" "${OFFICIAL_LIST[@]}" \
+              || die "Failed to fetch official dependency APKs"
+            group_end
+          fi
+
+          DEP_COUNT=$(find "$DEPENDS" -maxdepth 1 -name '*.apk' | wc -l)
+          MISSING_COUNT=${#MISSING_PKGS[@]}
+          log_info "Collected $DEP_COUNT dependency APKs from $ROOT_COUNT requested roots"
+          [ "$MISSING_COUNT" -gt 0 ] && log_warn "Requested packages missing from artifacts: ${!MISSING_PKGS[*]}"
+          [ "${#MISSING_LOCAL_DEPS[@]}" -gt 0 ] && log_warn "Unresolved local dependency APKs: ${!MISSING_LOCAL_DEPS[*]}"
+
+          {
+            SUMMARY="## Payload Dependency Closure"$'\n'
+            SUMMARY+="- Requested root packages: $ROOT_COUNT"$'\n'
+            SUMMARY+="- Collected dependency APKs: $DEP_COUNT"$'\n'
+            SUMMARY+="- Missing requested APKs: ${#MISSING_PKGS[@]}"$'\n'
+            SUMMARY+="- Unresolved local dependencies: ${#MISSING_LOCAL_DEPS[@]}"$'\n'
+            SUMMARY+="- Officially fetched dependency roots: ${#OFFICIAL_FETCH_PKGS[@]}"$'\n'
+            if [ "${#MISSING_PKGS[@]}" -gt 0 ]; then
+              SUMMARY+="### Missing Requested APKs"$'\n'
+              for pkg in "${!MISSING_PKGS[@]}"; do SUMMARY+="- $pkg"$'\n'; done
+            fi
+            if [ "${#OFFICIAL_FETCH_PKGS[@]}" -gt 0 ]; then
+              SUMMARY+="### Official Fetch Roots"$'\n'
+              for pkg in "${!OFFICIAL_FETCH_PKGS[@]}"; do SUMMARY+="- $pkg"$'\n'; done
+            fi
+            if [ "${#MISSING_LOCAL_DEPS[@]}" -gt 0 ]; then
+              SUMMARY+="### Unresolved Local Dependencies"$'\n'
+              for pkg in "${!MISSING_LOCAL_DEPS[@]}"; do SUMMARY+="- $pkg"$'\n'; done
+            fi
+            gh_summary "$SUMMARY"
+          }
           group_end
 
           group_start "Validate payload"
-          DEP_COUNT=$(find "$DEPENDS" -name "*.apk" | wc -l)
           MIN_DEPS=${MIN_REQUIRED_PACKAGES:-10}
           [ "$DEP_COUNT" -eq 0 ] && die "No dependency APKs found"
           [ "$DEP_COUNT" -lt "$MIN_DEPS" ] && die "Only $DEP_COUNT packages collected (expected at least $MIN_DEPS)"
+          [ "$MISSING_COUNT" -eq 0 ] || die "Some locally built PassWall packages are missing from payload"
           [ -f "$PAYLOAD/install.sh" ] || die "install.sh missing from payload"
           find "$PAYLOAD" -maxdepth 1 -type f \
             \( -name "luci-app-passwall-*.apk" -o -name "luci-app-passwall_*.apk" \) \
