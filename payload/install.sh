@@ -52,8 +52,6 @@ if [ -d depends ]; then
   log "Found $(find depends -maxdepth 1 -name '*.apk' 2>/dev/null | wc -l) dependency packages"
 fi
 
-set -- "$@" haproxy
-
 # ── 卸载旧版本 / Remove old version ──
 if apk list -I luci-app-passwall 2>/dev/null | grep -q "luci-app-passwall"; then
   INSTALLED_VER=$(apk list -I luci-app-passwall 2>/dev/null | sed -E 's/.*-([0-9][^ ]*).*/\1/' | head -1)

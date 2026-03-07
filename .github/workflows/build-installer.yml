@@ -97,8 +97,6 @@ jobs:
             source "$HOME/.cargo/env"
           fi
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          rustup target list --installed | grep -q x86_64-unknown-linux-musl \
-            || rustup target add x86_64-unknown-linux-musl
           rustc --version || die "Rust verification failed"
           cargo --version || die "Cargo verification failed"
           group_end
@@ -267,8 +265,8 @@ jobs:
           fi
           group_end
 
-          # 克隆 PassWall / Clone PassWall
-          group_start "Clone PassWall sources"
+          # 克隆 PassWall 包 / Clone PassWall packages
+          group_start "Clone PassWall package sources"
           rm -rf feeds/packages/net/{xray-core,v2ray-geodata,sing-box,chinadns-ng,dns2socks,\
           hysteria,ipt2socks,microsocks,naiveproxy,shadowsocks-libev,shadowsocks-rust,\
           shadowsocksr-libev,simple-obfs,tcping,trojan-plus,tuic-client,v2ray-plugin,\
@@ -276,15 +274,6 @@ jobs:
           rm -rf package/passwall-packages
           retry 3 10 git clone --depth=1 \
             https://github.com/Openwrt-Passwall/openwrt-passwall-packages package/passwall-packages
-          rm -rf feeds/luci/applications/luci-app-passwall package/passwall-luci
-          retry 3 10 git clone --depth=1 \
-            https://github.com/Openwrt-Passwall/openwrt-passwall package/passwall-luci
-          if [ -n "${PASSWALL_LUCI_REF:-}" ]; then
-            log_info "Checking out: $PASSWALL_LUCI_REF"
-            git -C package/passwall-luci fetch --all --tags
-            git -C package/passwall-luci checkout "$PASSWALL_LUCI_REF" \
-              || die "Failed to checkout: $PASSWALL_LUCI_REF"
-          fi
           group_end
 
           # 安装 feeds 包 / Install feeds
@@ -326,7 +315,7 @@ jobs:
             command -v "$tool" >/dev/null 2>&1 || die "Missing: $tool"
           done
           check_disk_space 10
-          for path in scripts/feeds staging_dir Makefile package/passwall-packages package/passwall-luci; do
+          for path in scripts/feeds staging_dir Makefile package/passwall-packages package/feeds/luci/luci-app-passwall; do
             [ -e "$path" ] || die "Missing: $path"
           done
           log_info "Validation passed"
@@ -374,6 +363,38 @@ jobs:
             while IFS= read -r pkg; do
               SELECTED_PACKAGES+="$pkg"$'\n'
             done < <(packages_conf_list "$PKGCONF")
+          fi
+
+          RUST_REQUESTED=1
+          if [ -n "$SELECTED_PACKAGES" ]; then
+            RUST_REQUESTED=0
+            for pkg in shadow-tls shadowsocks-rust; do
+              case "$pkg" in
+                shadow-tls)
+                  printf '%s' "$SELECTED_PACKAGES" | grep -qx "$pkg" && RUST_REQUESTED=1
+                  ;;
+                shadowsocks-rust)
+                  printf '%s' "$SELECTED_PACKAGES" | grep -Eq '^shadowsocks-rust(-|$)' && RUST_REQUESTED=1
+                  ;;
+              esac
+            done
+          fi
+
+          if [ "$RUST_REQUESTED" -eq 1 ]; then
+            group_start "Install Rust target"
+            GCC_BIN=$(find staging_dir -type f -path '*/toolchain-*/bin/*-gcc' 2>/dev/null | LC_ALL=C sort | head -n 1 || true)
+            [ -n "$GCC_BIN" ] || die "Cannot locate OpenWrt toolchain gcc"
+            GCC_TRIPLE=$($GCC_BIN -dumpmachine 2>/dev/null || true)
+            [ -n "$GCC_TRIPLE" ] || die "Cannot determine OpenWrt toolchain target triple"
+            RUST_TARGET=$(printf '%s' "$GCC_TRIPLE" | sed 's/openwrt/unknown/')
+            [ -n "$RUST_TARGET" ] || die "Cannot derive Rust target from $GCC_TRIPLE"
+            if rustup target list --installed | grep -qx "$RUST_TARGET"; then
+              log_info "Rust target already installed: $RUST_TARGET"
+            else
+              log_info "Installing Rust target: $RUST_TARGET"
+              rustup target add "$RUST_TARGET" || die "Failed to install Rust target: $RUST_TARGET"
+            fi
+            group_end
           fi
 
           is_package_selected() {
@@ -490,11 +511,11 @@ jobs:
           MIN_REQUIRED=${MIN_REQUIRED_PACKAGES:-15}
           MAX_FAILURES=${MAX_ALLOWED_FAILURES:-5}
           [ "$TOTAL_FAIL" -gt "$MAX_FAILURES" ] && die "Too many failures: $TOTAL_FAIL > $MAX_FAILURES"
-          [ "$TOTAL_OK" -lt "$MIN_REQUIRED" ] && log_warn "Only $TOTAL_OK packages built (need $MIN_REQUIRED)"
+          [ "$TOTAL_OK" -lt "$MIN_REQUIRED" ] && die "Only $TOTAL_OK packages built (need $MIN_REQUIRED)"
 
           # 编译主包 / Compile main package
           group_start "Compile luci-app-passwall"
-          make_pkg "package/luci-app-passwall/compile" "luci-app-passwall" \
+          make_pkg "package/feeds/luci/luci-app-passwall/compile" "luci-app-passwall" \
             || die "Failed to compile luci-app-passwall"
           group_end
 
@@ -555,7 +576,7 @@ jobs:
           DEP_COUNT=$(find "$DEPENDS" -name "*.apk" | wc -l)
           MIN_DEPS=${MIN_REQUIRED_PACKAGES:-10}
           [ "$DEP_COUNT" -eq 0 ] && die "No dependency APKs found"
-          [ "$DEP_COUNT" -lt "$MIN_DEPS" ] && log_warn "Only $DEP_COUNT packages (expected ≥$MIN_DEPS)"
+          [ "$DEP_COUNT" -lt "$MIN_DEPS" ] && die "Only $DEP_COUNT packages collected (expected at least $MIN_DEPS)"
           [ -f "$PAYLOAD/install.sh" ] || die "install.sh missing from payload"
           find "$PAYLOAD" -maxdepth 1 -type f \
             \( -name "luci-app-passwall-*.apk" -o -name "luci-app-passwall_*.apk" \) \

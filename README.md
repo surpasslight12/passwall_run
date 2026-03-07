@@ -8,7 +8,7 @@ Automatically compiles PassWall and all dependencies via GitHub Actions into a s
 
 - 从 OpenWrt SDK 交叉编译全部依赖（C/C++、Go、Rust、预编译）
 - 生成自解压 `.run` 安装包，一键部署到 OpenWrt 设备
-- 支持自定义 SDK 版本、架构和 PassWall 版本
+- 支持自定义 SDK 版本和架构
 - 每次执行完整构建，无增量编译，确保产物一致性
 - **Rust 编译优化**（并行代码生成、优化 RUSTFLAGS）
 - 编译自动降级（并行 → 单线程）
@@ -54,7 +54,6 @@ Automatically compiles PassWall and all dependencies via GitHub Actions into a s
 | 变量 Variable | 必填 Required | 说明 Description |
 |---------------|---------------|------------------|
 | `OPENWRT_SDK_URL` | ✅ | SDK 下载地址 |
-| `PASSWALL_LUCI_REF` | ❌ | 固定 PassWall 版本（如 `v26.1.21`） |
 
 ### `config/packages.conf`
 
