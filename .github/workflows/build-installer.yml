@@ -116,7 +116,7 @@ jobs:
           log_info "Downloading $SDK_FILE"
           retry 3 30 wget -q "$OPENWRT_SDK_URL" -O "$SDK_FILE"
           [ -f "$SDK_FILE" ] || die "Download failed"
-          log_info "Extracting…"
+          log_info "Extracting\u2026"
           case "$SDK_FILE" in
             *.tar.zst) tar --use-compress-program=zstd -xf "$SDK_FILE" --strip-components=1 ;;
             *.tar.xz)  tar xf "$SDK_FILE" --strip-components=1 ;;
@@ -137,7 +137,7 @@ jobs:
             while IFS= read -r -d '' godir; do
               SDK_VER=$("$godir/bin/go" version 2>/dev/null | awk '{print $3}' || echo "unknown")
               if [ "$SDK_VER" != "$SYS_VER" ]; then
-                log_info "Replacing $godir ($SDK_VER → $SYS_VER)"
+                log_info "Replacing $godir ($SDK_VER \u2192 $SYS_VER)"
                 rm -rf "$godir" && cp -a "$GOROOT" "$godir"
               fi
             done < <(find openwrt-sdk/staging_dir -maxdepth 4 -type d \( -name "go-*" -o -name "go" \) -print0 2>/dev/null)
@@ -206,7 +206,7 @@ jobs:
           if [ -d "feeds/packages/lang/golang/golang1.26" ] && [ -f "$COMPILER_MK" ]; then
             if grep -q '$(error go-' "$COMPILER_MK"; then
               sed -i 's/$(error go-/$(warning go-/g' "$COMPILER_MK"
-              log_info "Patched golang-compiler.mk: CheckHost error → warning"
+              log_info "Patched golang-compiler.mk: CheckHost error \u2192 warning"
             fi
             # Ensure Package/$(PKG_NAME)/Default has TITLE so BuildPackage passes.
             # Some golang-version.mk versions omit TITLE on linux/amd64,
@@ -245,7 +245,7 @@ jobs:
                       mkdir -p "staging_dir/host/bin"
                       [ -L "staging_dir/host/bin/go1.26" ]    || ln -sf "../lib/go-1.26/bin/go"    "staging_dir/host/bin/go1.26"
                       [ -L "staging_dir/host/bin/gofmt1.26" ] || ln -sf "../lib/go-1.26/bin/gofmt" "staging_dir/host/bin/gofmt1.26"
-                      log_info "golang1.26 pre-installed → $HOST_LIB"
+                      log_info "golang1.26 pre-installed \u2192 $HOST_LIB"
                     else
                       log_info "golang1.26 already at $HOST_LIB"
                     fi
@@ -497,7 +497,7 @@ jobs:
           ARCH_PACKAGES=$(sed -n 's/^CONFIG_TARGET_ARCH_PACKAGES="\([^"]*\)"/\1/p' .config | head -n 1)
           LOCAL_REPO_ROOT="$PWD/.local-apk-repo"
           LOCAL_REPO_ARCH_DIR="$LOCAL_REPO_ROOT/$ARCH_PACKAGES"
-          LOCAL_REPO_INDEX="$LOCAL_REPO_ARCH_DIR/APKINDEX.tar.gz"
+          LOCAL_REPO_INDEX="$LOCAL_REPO_ARCH_DIR/packages.adb"
           FETCH_DIR="$PWD/.resolved-apks"
 
           [ -x "$APK_TOOL" ] || die "OpenWrt host apk tool not found: $APK_TOOL"
@@ -517,12 +517,13 @@ jobs:
             mapfile -t LOCAL_REPO_APKS < <(find "$LOCAL_REPO_ARCH_DIR" -maxdepth 1 -type f -name '*.apk' | LC_ALL=C sort)
             [ "${#LOCAL_REPO_APKS[@]}" -gt 0 ] || die "Local APK repository is empty"
 
-            # Create APKINDEX.tar.gz from local APKs.
+            # Create packages.adb (v3 format) from local APKs.
             # mkndx may exit non-zero for dep warnings on a subset repo — that is
             # expected. Redirect output to a log file (NOT a pipe) to avoid SIGPIPE
             # killing the process before it finishes writing the index.
+            # --allow-untrusted: self-built APKs are not signed.
             local mkndx_log="/tmp/mkndx-$$.log"
-            if "$APK_TOOL" mkndx --output "$LOCAL_REPO_INDEX" "${LOCAL_REPO_APKS[@]}" \
+            if "$APK_TOOL" mkndx --allow-untrusted --output "$LOCAL_REPO_INDEX" "${LOCAL_REPO_APKS[@]}" \
                  >"$mkndx_log" 2>&1; then
               log_info "apk mkndx succeeded"
             else
@@ -531,8 +532,8 @@ jobs:
             fi
             rm -f "$mkndx_log"
 
-            [ -f "$LOCAL_REPO_INDEX" ] || die "Failed to create local APK index — apk mkndx did not produce output file"
-            log_info "Created APKINDEX with ${#LOCAL_REPO_APKS[@]} packages"
+            [ -f "$LOCAL_REPO_INDEX" ] || die "Failed to create local APK index \u2014 apk mkndx did not produce output file"
+            log_info "Created packages.adb index with ${#LOCAL_REPO_APKS[@]} packages"
           }
 
           make_combined_repositories() {
@@ -561,7 +562,7 @@ jobs:
             [ "$#" -gt 0 ] || return 0
             rm -rf "$dest_dir"
             mkdir -p "$dest_dir"
-            log_info "Fetching ${#} package specs from combined repos…"
+            log_info "Fetching ${#} package specs from combined repos\u2026"
             "$APK_TOOL" \
               --allow-untrusted \
               --force-missing-repositories \
@@ -619,7 +620,7 @@ jobs:
             if [ -n "$pkg_file" ]; then
               cp "$pkg_file" "$PAYLOAD/"
               TOPLEVEL_FILES["$(basename "$pkg_file")"]=1
-              log_info "Collected top-level $pkg → $(basename "$pkg_file")"
+              log_info "Collected top-level $pkg \u2192 $(basename "$pkg_file")"
             elif [ "$pkg" = "luci-i18n-passwall-zh-cn" ]; then
               log_info "Chinese i18n package not resolved (non-critical)"
             else
@@ -710,7 +711,7 @@ jobs:
           group_start "Verify installer"
           log_info "$(file "$RUN_NAME")"
           sh "$RUN_NAME" --check || die "Integrity check failed"
-          log_info "OK — $(du -h "$RUN_NAME" | cut -f1)"
+          log_info "OK \u2014 $(du -h "$RUN_NAME" | cut -f1)"
           group_end
 
           gh_set_env "RUN_NAME" "$RUN_NAME"
