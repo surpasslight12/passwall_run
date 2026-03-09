@@ -107,50 +107,6 @@ gh_summary() {
   [ -n "${GITHUB_STEP_SUMMARY:-}" ] && printf '%s\n' "$1" >> "$GITHUB_STEP_SUMMARY"
 }
 
-# ── 缓存裁剪 / Cache trimming ──
-# Usage: trim_cache_dir <dir> <max_mb> [label]
-trim_cache_dir() {
-  local dir="$1" max_mb="$2" label="${3:-cache}"
-  local current_kb max_kb
-
-  [ -d "$dir" ] || {
-    log_info "$label cache missing, skip trim"
-    return 0
-  }
-
-  current_kb=$(du -sk "$dir" 2>/dev/null | awk '{print $1}')
-  current_kb="${current_kb:-0}"
-  max_kb=$((max_mb * 1024))
-
-  if [ "$current_kb" -le "$max_kb" ]; then
-    log_info "$label cache within limit: $((current_kb / 1024))MB <= ${max_mb}MB"
-    return 0
-  fi
-
-  log_warn "$label cache exceeds limit: $((current_kb / 1024))MB > ${max_mb}MB; trimming oldest files"
-  while [ "$current_kb" -gt "$max_kb" ]; do
-    local removed_any=0
-    while IFS= read -r entry; do
-      local path
-      path="${entry#* * }"
-      [ -n "$path" ] || continue
-      [ -f "$path" ] || continue
-      rm -f "$path"
-      removed_any=1
-      current_kb=$(du -sk "$dir" 2>/dev/null | awk '{print $1}')
-      current_kb="${current_kb:-0}"
-      [ "$current_kb" -le "$max_kb" ] && break
-    done < <(find "$dir" -type f -printf '%T@ %p\n' 2>/dev/null | sort -n)
-
-    [ "$removed_any" -eq 1 ] || break
-  done
-
-  find "$dir" -type d -empty -delete 2>/dev/null || true
-  current_kb=$(du -sk "$dir" 2>/dev/null | awk '{print $1}')
-  current_kb="${current_kb:-0}"
-  log_info "$label cache after trim: $((current_kb / 1024))MB"
-}
-
 # ── PassWall 源目录映射 / PassWall source directory mapping ──
 # Maps a package name to its source directory inside the SDK tree.
 # Must be called with cwd = SDK root.
